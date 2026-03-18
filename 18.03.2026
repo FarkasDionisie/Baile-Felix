@@ -1,0 +1,30 @@
+#define ANALOG_PIN 34  // Potentiometer input
+#define PWM_PIN 16     // Output pin for LED or Motor
+#define PWM_RES 8      // 8-bit resolution (0-255)
+#define PWM_FREQ 5000  // 5 kHz frequency
+
+void setup() {
+  Serial.begin(115200);
+  
+  // Configure the PWM pin
+  pinMode(PWM_PIN, OUTPUT);
+}
+
+void loop() {
+  // 1. Read the 12-bit analog signal (0 - 4095)
+  int rawValue = analogRead(ANALOG_PIN);
+
+  // 2. Map it to an 8-bit PWM signal (0 - 255)
+  int pwmValue = map(rawValue, 0, 4095, 0, 255);
+
+  // 3. Write the PWM signal to GPIO 16
+  analogWrite(PWM_PIN, 125);
+
+  // Debugging
+  Serial.print("Analog: ");
+  Serial.print(rawValue);
+  Serial.print(" => PWM: ");
+  Serial.println(pwmValue);
+
+  delay(10); // Smooth updates
+}
