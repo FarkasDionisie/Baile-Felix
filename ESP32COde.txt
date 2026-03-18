@@ -1,0 +1,191 @@
+#include <Arduino.h>
+#include <WiFi.h>
+#include <Firebase_ESP_Client.h>
+
+#include "addons/TokenHelper.h"
+#include "addons/RTDBHelper.h"
+
+// =================================================================
+// CONFIGURATION & CREDENTIALS
+// =================================================================
+const char* WIFI_SSID = "GalaxyS";     
+const char* WIFI_PASSWORD = "asdfgh1234"; 
+
+#define API_KEY "AIzaSyCx9rr0SKJZW9CmLLpdmmUaFSrRN0b-t4s"
+#define DATABASE_URL "https://pompe-baile-felix-default-rtdb.europe-west1.firebasedatabase.app"
+
+// --- Hardware Settings ---
+#define SENSOR_PIN 34
+#define VALVE_PIN  25
+
+// --- Firebase Objects ---
+FirebaseData fbdo;
+FirebaseAuth auth;
+FirebaseConfig config;
+
+// --- OPTIMIZATION TIMERS & STATE VARIABLES ---
+unsigned long lastSensorReadMillis  = 0;
+unsigned long lastSensorWriteMillis = 0;
+unsigned long lastValveReadMillis   = 0;
+
+float lastSentDebit      = -100.0;
+float currentDebitTarget = 0.0;
+
+// --- HARDWARE LIMITS ---
+const int MIN_DAC = 46;  
+const int MAX_DAC = 231; 
+int currentDacValue = MIN_DAC;
+
+// --- SYSTEM TUNING ---
+const float DEADBAND_THRESHOLD  = 1.0;
+const int   HEARTBEAT_INTERVAL  = 30000;
+const int   VALVE_READ_INTERVAL = 5000;
+const int   SENSOR_POLL_INTERVAL = 1000;
+
+// --- AUTOMATION TUNING ---
+const float CONTROL_TOLERANCE = 1.5;
+const int   VALVE_STEP_SIZE   = 3;
+
+// =================================================================
+// SETUP
+// =================================================================
+void setup() {
+  Serial.begin(115200);
+  analogSetPinAttenuation(SENSOR_PIN, ADC_11db);
+  
+  pinMode(VALVE_PIN, OUTPUT);
+  analogWrite(VALVE_PIN, currentDacValue);
+
+
+  // --- Wi-Fi Connection ---
+  Serial.print("Connecting to Wi-Fi");
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+  delay(100);
+  
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
+    delay(500);
+  }
+  Serial.println("\nWi-Fi Connected! IP: ");
+  Serial.println(WiFi.localIP());
+
+  // --- Firebase Setup ---
+  config.api_key        = API_KEY;
+  config.database_url   = DATABASE_URL;
+  config.timeout.serverResponse = 15 * 1000;
+  fbdo.setResponseSize(2048);
+
+  auth.user.email    = "admin@bailefelix.com";
+  auth.user.password = "pompa1234";
+
+  config.token_status_callback = tokenStatusCallback;
+  Firebase.begin(&config, &auth);
+  Firebase.reconnectWiFi(true);
+
+  Serial.print("Waiting for Firebase auth");
+  while (!Firebase.ready()) {
+    Serial.print(".");
+    delay(100);
+  }
+  Serial.println("\nFirebase Ready!");
+
+  // --- SET INITIAL STATUS ---
+  Firebase.RTDB.setString(&fbdo,    "pumps/pump_001/status", "online");
+  Firebase.RTDB.setTimestamp(&fbdo, "pumps/pump_001/last_seen");       // <-- NEW
+  Firebase.RTDB.setTimestamp(&fbdo, "pumps/pump_001/last_heartbeat");
+  Serial.println(">>> Online Status Published to Firebase <<<");
+}
+
+// =================================================================
+// MAIN LOOP
+// =================================================================
+void loop() {
+  if (!Firebase.ready()) return;
+
+  unsigned long currentMillis = millis();
+
+  // -----------------------------------------------------------------
+  // 1. READ PHYSICAL SENSOR & AUTO-ADJUST VALVE (Every 1 Second)
+  // -----------------------------------------------------------------
+  if (currentMillis - lastSensorReadMillis >= SENSOR_POLL_INTERVAL || lastSensorReadMillis == 0) {
+    lastSensorReadMillis = currentMillis;
+
+    // --- A. Read Actual Debit ---
+    int   rawADC    = analogRead(SENSOR_PIN); 
+    float voltageIn = (rawADC / 4095.0) * 3.3; 
+    float currentDebit = 0.0;
+
+
+    if (voltageIn < 0.5) {
+      currentDebit    = 0.0; 
+      currentDacValue = MIN_DAC;
+      Serial.println("ALARM: Input wire broken or no power! Forcing valve closed.");
+      Serial.println(voltageIn);
+    } else {
+      currentDebit = ((voltageIn - 0.6) / 2.4) * 71.0;
+      if (currentDebit < 0.0)  currentDebit = 0.0;
+      if (currentDebit > 71.0) currentDebit = 71.0;
+      Serial.println(voltageIn);
+    }
+
+    // --- B. Auto-Regulation ---
+    float error = currentDebitTarget - currentDebit;
+
+    if (abs(error) > CONTROL_TOLERANCE && voltageIn >= 0.5) {
+      if (error > 0) {
+        currentDacValue += VALVE_STEP_SIZE;
+        Serial.printf("Adjusting Valve OPEN  (Target: %.1f | Actual: %.1f)\n", currentDebitTarget, currentDebit);
+      } else {
+        currentDacValue -= VALVE_STEP_SIZE;
+        Serial.printf("Adjusting Valve CLOSED (Target: %.1f | Actual: %.1f)\n", currentDebitTarget, currentDebit);
+      }
+      if (currentDacValue < MIN_DAC) currentDacValue = MIN_DAC;
+      if (currentDacValue > MAX_DAC) currentDacValue = MAX_DAC;
+      analogWrite(VALVE_PIN, currentDacValue);
+    }
+
+    // --- C. Write to Firebase ---
+    float diffUpload      = abs(currentDebit - lastSentDebit);
+    bool significantChange = (diffUpload >= DEADBAND_THRESHOLD);
+    bool timeForHeartbeat  = (currentMillis - lastSensorWriteMillis >= HEARTBEAT_INTERVAL);
+
+    if (significantChange || timeForHeartbeat || lastSensorWriteMillis == 0) {
+
+      if (Firebase.RTDB.setFloat(&fbdo, "pumps/pump_001/debit_sensor_percentage", currentDebit)) {
+        Serial.printf(">>> UPLOADED Debit: %.2f m^3/h <<<\n", currentDebit);
+        lastSentDebit = currentDebit;
+
+        // Write last_seen timestamp on EVERY debit upload (significant change OR heartbeat)
+        Firebase.RTDB.setTimestamp(&fbdo, "pumps/pump_001/last_seen");
+        Serial.println(">>> last_seen timestamp updated <<<");
+      }
+
+      if (timeForHeartbeat) {
+        Firebase.RTDB.setString(&fbdo,    "pumps/pump_001/status", "online");
+        Firebase.RTDB.setTimestamp(&fbdo, "pumps/pump_001/last_heartbeat");
+        Serial.println(">>> Heartbeat sent <<<");
+      }
+
+      lastSensorWriteMillis = currentMillis;
+    }
+  }
+
+  // -----------------------------------------------------------------
+  // 2. READ NEW TARGET FROM FIREBASE (Every 5 Seconds)
+  // -----------------------------------------------------------------
+  if (currentMillis - lastValveReadMillis >= VALVE_READ_INTERVAL || lastValveReadMillis == 0) {
+    lastValveReadMillis = currentMillis;
+
+    if (Firebase.RTDB.getFloat(&fbdo, "pumps/pump_001/debit_target")) {
+      float incomingTarget = fbdo.to<float>();
+      if (incomingTarget != currentDebitTarget) {
+        currentDebitTarget = incomingTarget;
+        Serial.printf("<<< NEW DEBIT TARGET RECEIVED: %.2f m^3/h >>>\n", currentDebitTarget);
+      }
+    } else {
+      Serial.println("Failed to read debit_target from Firebase.");
+    }
+  }
+}
