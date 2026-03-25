@@ -1,15 +1,15 @@
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
-import { getDatabase, ref, onValue, set } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-database.js";
+import { initializeApp } from "https://www.gstatic.com/firebasejs/12.11.0/firebase-app.js";
+import { getDatabase, ref, onValue, set } from "https://www.gstatic.com/firebasejs/12.11.0/firebase-database.js";
 
 const firebaseConfig = {
-    apiKey: "AIzaSyCx9rr0SKJZW9CmLLpdmmUaFSrRN0b-t4s",
-    authDomain: "pompe-baile-felix.firebaseapp.com",
-    databaseURL: "https://pompe-baile-felix-default-rtdb.europe-west1.firebasedatabase.app",
-    projectId: "pompe-baile-felix",
-    storageBucket: "pompe-baile-felix.firebasestorage.app",
-    messagingSenderId: "87522572818",
-    appId: "1:87522572818:web:6c4f63645192cb5289f6cb",
-    measurementId: "G-8DL6XREQVM"
+    apiKey: "AIzaSyB8oUfRWtMKOv_J1NED6DUZhRWi7oPz1_A",
+    authDomain: "bailefelixpompe.firebaseapp.com",
+    databaseURL: "https://bailefelixpompe-default-rtdb.europe-west1.firebasedatabase.app",
+    projectId: "bailefelixpompe",
+    storageBucket: "bailefelixpompe.firebasestorage.app",
+    messagingSenderId: "473289739548",
+    appId: "1:473289739548:web:02efba3342b5c1b134bed9",
+    measurementId: "G-YP67JMJWTB"
 };
 
 const app = initializeApp(firebaseConfig);
@@ -65,7 +65,6 @@ let currentMax          = 71;
 let lastSeenIntervals   = {};
 let lastSeenValues      = {};
 
-// Tracks which pump IDs currently have emergency active
 const emergencyActive = new Set();
 
 // ── Mobile sidebar toggle ──────────────────────────────────────────────────
@@ -205,7 +204,6 @@ function selectESP(espId, espName, espMax, clickedEl) {
     errorMsg.textContent      = `Valoarea trebuie să fie între 0 și ${espMax}!`;
     errorMsg.style.display    = 'none';
 
-    // Restore emergency button state for this device
     if (emergencyActive.has(espId)) {
         emergencyBtn.classList.add('active');
         emergencyBtn.textContent = '⚠ Stop Urgență — ACTIV';
@@ -236,7 +234,6 @@ function selectESP(espId, espName, espMax, clickedEl) {
         const data = snap.val();
         if (data !== null) {
             valveDisplay.textContent = data;
-            // If debit_target is set to something > 0, deactivate emergency
             if (data > 0 && emergencyActive.has(espId)) {
                 deactivateEmergency(espId, emergencyBtn);
             }
@@ -267,7 +264,6 @@ function showAll(sondaNumber) {
         const card = document.createElement('div');
         card.className = 'grid-card';
 
-        // Check if emergency is already active for this device
         const emergencyIsActive = emergencyActive.has(id);
 
         card.innerHTML = `
@@ -324,7 +320,6 @@ function showAll(sondaNumber) {
             const data = snap.val();
             if (data !== null) {
                 valveEl.textContent = data;
-                // If debit_target goes above 0, deactivate emergency for this card
                 if (data > 0 && emergencyActive.has(id)) {
                     deactivateEmergency(id, emergencyEl);
                 }
@@ -333,7 +328,6 @@ function showAll(sondaNumber) {
 
         gridUnsubs.push(u1, u2, u3);
 
-        // Setează button — also deactivates emergency
         document.getElementById(`grid-btn-${id}`).addEventListener('click', () => {
             const input    = document.getElementById(`grid-input-${id}`);
             const errEl    = document.getElementById(`grid-err-${id}`);
@@ -352,7 +346,6 @@ function showAll(sondaNumber) {
             setTimeout(() => { btn.disabled = false; }, 1000);
         });
 
-        // Stop Urgență button
         emergencyEl.addEventListener('click', () => {
             set(debitRef, 0);
             activateEmergency(id, emergencyEl);
@@ -390,10 +383,8 @@ setValveBtn.addEventListener('click', () => {
     setTimeout(() => { setValveBtn.disabled = false; }, 1000);
 });
 
-// Stop Urgență — single device view
 emergencyBtn.addEventListener('click', () => {
     if (!currentDebitRef) return;
-    // Find the current espId from the active esp-item
     const activeItem = document.querySelector('.esp-item.active');
     if (!activeItem) return;
     const espId = activeItem.getAttribute('data-id');
